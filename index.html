@@ -49,9 +49,9 @@
 
 <h2>4. 保存期間</h2>
 <ul>
-<li>利用者が設定した保持期間（例: 1日 / 1週間 / 1ヶ月 / 永続）に基づき保存します。</li>
-<li>期間を過ぎたデータは、端末・クラウドの双方から自動的に削除されます。</li>
-<li>利用者はアプリ内の「記録をすべて削除」からいつでも全データを削除できます。</li>
+<li><b>端末内の記録は自動削除されません。</b>「記録をすべて削除」を行うまで保持されます。端末内のデータは OS 標準のバックアップ（iOS の iCloud バックアップ／Android のバックアップ）に含まれ、機種変更時などに復元される場合があります。</li>
+<li><b>クラウド（Firestore）のデータは、利用者が設定した「クラウド保持期間」（例: 1日 / 1週間 / 1ヶ月 / 永続）に基づき、期間を過ぎると自動的に削除されます。</b>（Firestore の TTL 機能を使用）</li>
+<li>利用者はアプリ内の「記録をすべて削除」からいつでも端末内の全データを削除できます。</li>
 </ul>
 
 <h2>5. 第三者への提供</h2>
@@ -106,9 +106,9 @@
 
 <h2>4. Retention</h2>
 <ul>
-<li>Data is retained based on the retention period you choose (e.g., 1 day, 1 week, 1 month, or permanent).</li>
-<li>Data older than the chosen period is automatically deleted from both the device and the cloud.</li>
-<li>You can delete all your data at any time from "Delete all records" in the App.</li>
+<li><b>On-device records are not automatically deleted.</b> They are kept until you use "Delete all records." On-device data is included in your OS standard backup (iCloud Backup on iOS / Android Backup) and may be restored when you switch devices.</li>
+<li><b>Cloud (Firestore) data is automatically deleted after the "cloud retention period" you choose</b> (e.g., 1 day, 1 week, 1 month, or permanent), using Firestore's TTL feature.</li>
+<li>You can delete all your on-device data at any time from "Delete all records" in the App.</li>
 </ul>
 
 <h2>5. Sharing With Third Parties</h2>
