@@ -181,47 +181,298 @@ fun buildRequest(intervalMs: Long, minDistM: Float, batchMs: Long) =
 ## 4. その他の省電力アイデア
 
 ### 4-1. クラウド同期を充電中・WiFi時に寄せる（効果大）
-GPSと並んで電池を食うのが**モバイル通信のラジオ起動**。
-Firestoreへの同期を記録のたびに行わず、ローカルDBに貯めて
-WorkManager の制約付きジョブでまとめ送りする。
+
+GPSの次に電池を食うのが**モバイル通信のラジオ起動**。1点記録するたびに
+Firestore へ書きに行くとその都度セルラーラジオが起動し、10〜20秒間
+高消費状態が続く（Radio Tail と呼ばれる現象）。
+
+**方針**: ローカルDBに溜めて、WorkManager の制約付きジョブでまとめ送り。
+前面時（アプリを開いているとき）だけ即時同期すれば UX は変わらない。
 
 ```kotlin
-val syncWork = PeriodicWorkRequestBuilder<SyncWorker>(6, TimeUnit.HOURS)
-    .setConstraints(Constraints.Builder()
-        .setRequiredNetworkType(NetworkType.UNMETERED)  // WiFi時
-        .setRequiresCharging(true)                      // 充電中
-        .build())
+// WorkManager で定期バックグラウンド同期（6時間ごと、WiFi + 充電中）
+val constraints = Constraints.Builder()
+    .setRequiredNetworkType(NetworkType.UNMETERED) // WiFi のみ
+    .setRequiresCharging(true)                     // 充電中のみ
     .build()
-```
-リアルタイム同期が欲しいのはアプリを開いている時だけなので、
-前面時のみ即時同期に切り替えれば体験は変わらない。
 
-### 4-2. ローカルDB書き込みもバッチ化（効果中）
-1点ごとに INSERT せず、メモリに数十点貯めてトランザクションでまとめ書き。
-ストレージI/Oのウェイクアップが減る。クラッシュ対策に
-「N点 or 60秒ごと」のフラッシュにする。
+val syncWork = PeriodicWorkRequestBuilder<FirestoreSyncWorker>(6, TimeUnit.HOURS)
+    .setConstraints(constraints)
+    .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.MINUTES)
+    .build()
+
+WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+    "firestore_sync",
+    ExistingPeriodicWorkPolicy.KEEP,
+    syncWork
+)
+
+// Worker 本体
+class FirestoreSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+    override suspend fun doWork(): Result {
+        val unsynced = localDb.locationDao().getUnsynced() // 未同期の全レコード
+        if (unsynced.isEmpty()) return Result.success()
+
+        return try {
+            // Firestore に一括書き込み（バッチ上限500件ずつ分割）
+            unsynced.chunked(500).forEach { chunk ->
+                val batch = firestore.batch()
+                chunk.forEach { pt ->
+                    batch.set(firestore.collection("locations").document(), pt.toMap())
+                }
+                batch.commit().await()
+            }
+            localDb.locationDao().markSynced(unsynced.map { it.id })
+            Result.success()
+        } catch (e: Exception) {
+            Result.retry() // 次の制約満足タイミングで再試行
+        }
+    }
+}
+```
+
+前面に来たときだけ即時同期する切り替え（§2 の ProcessLifecycleOwner に追記）:
+
+```kotlin
+Lifecycle.Event.ON_START -> {
+    // 前面: 溜まった未同期分を即アップロード（通信があるときだけ）
+    if (isNetworkAvailable()) scope.launch { syncToFirestoreNow() }
+}
+Lifecycle.Event.ON_STOP -> {
+    // 背面: WorkManager に任せる（即時同期は止める）
+}
+```
+
+注意:
+- WiFi + 充電中の条件を**両方**つけると同期が数日来ない場合がある。
+  許容できるなら条件を緩めて「WiFi または 充電中 かつ 未同期が N 点以上」にする
+- `setRequiresStorageNotLow()` も追加するとディスク不足時の書き込みエラーを防げる
+
+---
+
+### 4-2. ローカルDB書き込みのバッチ化（効果中）
+
+1点ごとに `INSERT` するとストレージ I/O のたびにウェイクアップが発生し、
+WAL ジャーナルの fsync コストもかかる。**メモリバッファに溜めて
+「N点 or 一定時間経過」でトランザクションまとめ書き**にする。
+
+```kotlin
+class LocationBuffer(
+    private val dao: LocationDao,
+    private val maxSize: Int = 30,           // 30点溜まったらフラッシュ
+    private val maxAgeMs: Long = 60_000      // 最大60秒に1回は必ずフラッシュ
+) {
+    private val buffer = mutableListOf<LocationEntity>()
+    private var lastFlushAt = System.currentTimeMillis()
+
+    fun add(point: LocationEntity) {
+        buffer.add(point)
+        val now = System.currentTimeMillis()
+        if (buffer.size >= maxSize || now - lastFlushAt >= maxAgeMs) {
+            flush()
+        }
+    }
+
+    fun flush() {
+        if (buffer.isEmpty()) return
+        val toWrite = buffer.toList()
+        buffer.clear()
+        lastFlushAt = System.currentTimeMillis()
+        // Room のトランザクション一括 INSERT
+        CoroutineScope(Dispatchers.IO).launch {
+            dao.insertAll(toWrite)
+        }
+    }
+}
+
+// Room DAO 側
+@Dao
+interface LocationDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(points: List<LocationEntity>)
+}
+```
+
+フォアグラウンドサービスの `onDestroy` / プロセス終了前に必ず `flush()` を呼ぶこと。
+クラッシュ時の取りこぼしが気になるなら `maxSize` を小さく（10点程度）にする。
+
+---
 
 ### 4-3. バッテリーセーバー連動（効果中・体験配慮）
-`PowerManager.isPowerSaveMode` / バッテリー残量を見て、
-低残量時は自動で間隔を2倍に伸ばす or 記録一時停止を提案する通知を出す。
-ユーザー設定に「省電力モード（粗め）/ 標準 / 高精度」の3段階を
-用意しておくと、ユーザー側でトレードオフを選べる。
 
-### 4-4. 後処理で軌跡を補正し、生データの密度を下げる（効果中）
-取得密度を下げると軌跡が粗くなる問題は、表示時の処理である程度補える:
-- Douglas-Peucker 簡略化はすでに点が多い場合の表示高速化に
-- 徒歩/車の区間はスナップ補正（道路・歩道に吸着）で粗い点列でも見栄えが保てる
-「取得を増やして綺麗にする」のではなく「少ない点を賢く描く」方向。
+端末のバッテリー残量・省電力モードを監視し、自動でロケーション取得間隔を調整する。
+**ユーザーが気づかないうちに精度が落ちる**のは避けたいので、
+通知で「省電力モードに切り替えます」と伝えるか、設定で3段階から選べるようにするのがベスト。
+
+#### 仕組み1: バッテリー残量による自動切り替え
+
+```kotlin
+// BroadcastReceiver でバッテリーイベントを受信
+class BatteryReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val level  = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+        val scale  = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+        val pct    = if (scale > 0) level * 100 / scale else return
+
+        val mode = when {
+            pct <= 15 -> TrackingMode.POWER_SAVE   // 間隔2倍 or 記録停止通知
+            pct <= 30 -> TrackingMode.BALANCED
+            else      -> TrackingMode.NORMAL
+        }
+        LocationSettingsManager.applyMode(mode)
+    }
+}
+
+// AndroidManifest に登録
+// <action android:name="android.intent.action.BATTERY_CHANGED"/>
+```
+
+#### 仕組み2: システムの省電力モード（Battery Saver）連動
+
+```kotlin
+val powerManager = getSystemService(PowerManager::class.java)
+
+// 現在の状態を確認
+val isSaving = powerManager.isPowerSaveMode
+
+// 変化を検知
+registerReceiver(object : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val saving = powerManager.isPowerSaveMode
+        LocationSettingsManager.applyMode(
+            if (saving) TrackingMode.POWER_SAVE else TrackingMode.NORMAL
+        )
+    }
+}, IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED))
+```
+
+#### 3段階モードの定義例
+
+```kotlin
+enum class TrackingMode {
+    POWER_SAVE, // 省電力: 間隔 2倍、BALANCED精度
+    BALANCED,   // 標準:   §3 の動的間隔そのまま
+    NORMAL      // 高精度: HIGH精度、間隔短め
+}
+
+object LocationSettingsManager {
+    fun applyMode(mode: TrackingMode) {
+        val multiplier = when (mode) {
+            TrackingMode.POWER_SAVE -> 2.0f
+            TrackingMode.BALANCED   -> 1.0f
+            TrackingMode.NORMAL     -> 0.75f
+        }
+        val priority = when (mode) {
+            TrackingMode.POWER_SAVE -> Priority.PRIORITY_BALANCED_POWER_ACCURACY
+            else                    -> Priority.PRIORITY_HIGH_ACCURACY
+        }
+        // 現在の ActivityType に応じた間隔 × multiplier で LocationRequest を再構築
+        currentActivityType?.let { rebuildRequest(it, multiplier, priority) }
+    }
+}
+```
+
+ユーザー設定で3段階を固定することもでき、その場合 `multiplier` をユーザー選択で固定すれば同じ仕組みが使い回せる。
+
+---
+
+### 4-4. 後処理での軌跡補正（効果中）
+
+取得間隔を広げると点が荒くなるが、**表示・集計時の後処理で品質を保てる**。
+「点を増やして綺麗にする」から「少ない点を賢く描く」への発想転換。
+
+#### Douglas-Peucker 簡略化
+
+地図のズームレベルに合わせて表示点数を間引く。拡大表示時は元の点を使い、
+縮小表示では簡略化した点列を使うことで描画負荷も下がる。
+
+```kotlin
+// ε = 許容誤差（メートル換算）。ズームに合わせて変える
+fun douglasPeucker(points: List<LatLng>, epsilon: Double): List<LatLng> {
+    if (points.size < 3) return points
+    var maxDist = 0.0; var maxIdx = 0
+    val end = points.last()
+    for (i in 1 until points.size - 1) {
+        val d = perpendicularDistance(points[i], points.first(), end)
+        if (d > maxDist) { maxDist = d; maxIdx = i }
+    }
+    return if (maxDist > epsilon) {
+        douglasPeucker(points.subList(0, maxIdx + 1), epsilon) +
+        douglasPeucker(points.subList(maxIdx, points.size), epsilon).drop(1)
+    } else {
+        listOf(points.first(), points.last())
+    }
+}
+
+fun perpendicularDistance(p: LatLng, a: LatLng, b: LatLng): Double {
+    // 線分 a-b からの垂直距離（度単位→メートル近似）
+    val dx = b.longitude - a.longitude; val dy = b.latitude - a.latitude
+    val len2 = dx*dx + dy*dy
+    if (len2 == 0.0) return haversineMeters(p, a)
+    val t = ((p.longitude - a.longitude)*dx + (p.latitude - a.latitude)*dy) / len2
+    val px = a.longitude + t*dx; val py = a.latitude + t*dy
+    return haversineMeters(p, LatLng(py, px))
+}
+```
+
+#### 速度・精度フィルタ（外れ値除去）
+
+GPS 誤差で「一瞬100m飛んだ」ような異常点を除去する。
+
+```kotlin
+fun filterOutliers(points: List<LocationEntity>): List<LocationEntity> {
+    val result = mutableListOf<LocationEntity>()
+    for (i in points.indices) {
+        if (i == 0) { result.add(points[i]); continue }
+        val prev = result.last()
+        val dist = haversineMeters(prev.toLatLng(), points[i].toLatLng())
+        val dt   = (points[i].timestamp - prev.timestamp) / 1000.0 // 秒
+        val impliedSpeed = if (dt > 0) dist / dt else 0.0          // m/s
+
+        // 時速200km超（55 m/s）は GPS 誤差とみなして除外
+        if (impliedSpeed < 55.0 || points[i].accuracy < 30f) {
+            result.add(points[i])
+        }
+    }
+    return result
+}
+```
+
+#### スナップ補正（Maps Roads API / Google Maps SDK）
+
+点が道路・歩道から外れている場合、最寄りの道路に吸着させる後処理。
+車・自転車の区間で特に効果的。
+
+```
+Google Roads API の snapToRoads エンドポイントに点列を送ると
+補正済みの点列が返ってくる（有料 API、課金注意）
+```
+
+実装方針:
+- 車・自転車判定の区間だけスナップをかける（徒歩は道路外を歩く場合がある）
+- ローカルで完結させたい場合は OSRM の map-matching API（OSS）を自前ホストする選択肢もある
+- クラウド同期のタイミング（§4-1 の SyncWorker）と合わせてバックグラウンドで処理し、
+  補正済み座標を別カラムに保存して表示時に使い分けるのが無難
+
+---
 
 ### 4-5. やっても効果が薄いもの（参考）
-- 距離フィルタ単体: 測位自体は続くので電池への効果は小さい（§前回の議論どおり）
+
+- **距離フィルタ単体**: GPSチップ自体は動き続けるので電池への効果は小さい。
+  DB・通信コストの節約にはなる
 - `setGranularity` / `setWaitForAccurateLocation`: 品質調整であり消費はほぼ変わらない
-- WakeLock の見直し: FLP + PendingIntent 構成にすれば自前WakeLockは不要になる
+- **WakeLock の見直し**: FLP + PendingIntent 構成（§2）にすれば自前 WakeLock は不要になる
+
+---
 
 ## 実装の優先順位（提案）
 
-1. **§2 前面/背面切り替え + PendingIntent化** — 構造の土台。先にやる
-2. **§1 Significant Motion + Transition API による静止時GPS停止** — 効果最大
-3. **§3 移動手段別の動的間隔** — §1のTransition結果を流用するだけなので追加コスト小
-4. **§4-1 同期のWorkManager化** — 通信系の節約
-5. §4-2, 4-3 は仕上げ
+| 優先度 | 内容 | 主な効果 |
+|--------|------|---------|
+| 1 | **§2 前面/背面切り替え + PendingIntent 化** | 構造の土台。先にやらないと他が乗らない |
+| 2 | **§1 Significant Motion + Transition API** | 静止中 GPS ゼロ。効果最大 |
+| 3 | **§3 移動手段別の動的間隔** | §1 の Transition 結果を流用するだけ |
+| 4 | **§4-2 ローカルDB バッチ書き込み** | 実装コスト小・副作用なし |
+| 5 | **§4-1 Firestore 同期を WorkManager 化** | 通信系の節約 |
+| 6 | **§4-3 バッテリーセーバー連動** | ユーザー体験配慮が必要。後半で |
+| 7 | **§4-4 後処理補正** | 取得間隔を広げた後の品質担保として |
