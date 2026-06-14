@@ -402,6 +402,15 @@ fun snapToReferenceRoute(gps: List<LatLng>, route: List<LatLng>): List<LatLng> {
 }
 ```
 
+### 5-3b. 「ルート画像から座標」は原則不要
+
+「ルート検索の画像を座標に変換したい」というニーズは、正しくはジオリファレンス＋
+ベクトル化であり、**大半は不要**（API応答に座標がある: Google `overview_polyline`
+デコード / ORS GeoJSON / Yahoo 経路探索）。**Google由来の座標は画像経由でもデコードでも
+恒久保存は規約違反**で、座標化しても制限は外れない。永続保存したいなら ORS(ODbL)や
+駅すぱあと/NAVITIMEを使う。画像処理が要るのは紙地図などデジタル元が無い場合のみ。
+詳細は `route-image-to-coordinates.md`。
+
 ### 5-4. 電車・鉄道区間の判別
 
 Activity Recognition API は電車を `IN_VEHICLE` に含めてしまう。
@@ -707,4 +716,4 @@ Android実装の前にデータや動作を検証するために使える。
 
 ---
 
-*このドキュメントは会話の設計議論をまとめたものです。実装時は各セクションの詳細設計（`docs/battery-optimization.md`、`docs/route-matching-and-import.md`、`docs/routing-api-options.md`、`docs/photo-gps-matching.md`）も参照してください。*
+*このドキュメントは会話の設計議論をまとめたものです。実装時は各セクションの詳細設計（`docs/battery-optimization.md`、`docs/route-matching-and-import.md`、`docs/routing-api-options.md`、`docs/route-image-to-coordinates.md`、`docs/photo-gps-matching.md`）も参照してください。*
