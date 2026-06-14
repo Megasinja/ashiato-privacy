@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>ASHIATO – GPS軌跡再生</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<style>
+:root {
+  --teal: #2E7D6B;
+  --teal-lt: #3d9e85;
+  --teal-bg: #e8f5f1;
+  --bg: #f4f5f7;
+  --surface: #fff;
+  --border: #e0e0e0;
+  --text: #212121;
+  --muted: #757575;
+  --shadow-up: 0 -2px 12px rgba(0,0,0,0.1);
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Header ── */
+#hd {
+  background: var(--teal);
+  color: #fff;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  z-index: 500;
+}
+#hd h1 { font-size: .95rem; font-weight: 700; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tabs { display: flex; background: rgba(0,0,0,.22); border-radius: 8px; padding: 3px; gap: 3px; }
+.tab {
+  padding: 5px 11px; border: none; background: transparent;
+  color: rgba(255,255,255,.75); cursor: pointer; font-size: .72rem;
+  border-radius: 6px; transition: all .15s; white-space: nowrap; font-family: inherit;
+}
+.tab.on { background: #fff; color: var(--teal); font-weight: 700; }
+.hd-btn {
+  background: rgba(255,255,255,.18); border: none; color: #fff;
+  width: 34px; height: 34px; border-radius: 8px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1rem; flex-shrink: 0; transition: background .15s;
+}
+.hd-btn:hover { background: rgba(255,255,255,.3); }
+.hd-btn.follow-on { background: rgba(255,255,255,.9); color: var(--teal); }
+
+/* ── Map ── */
+#map { flex: 1; min-height: 0; }
+
+/* ── Bottom panel ── */
+#panel {
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 10px 14px 12px;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-up);
+}
+.mode-banner {
+  font-size: .68rem; color: var(--teal); font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em;
+  margin-bottom: 6px; padding: 3px 8px;
+  background: var(--teal-bg); border-radius: 4px;
+  display: inline-block;
+}
+.prog-row {
+  display: flex; align-items: center; gap: 7px; margin-bottom: 7px;
+}
+.play-btn {
+  width: 38px; height: 38px; border-radius: 50%;
+  background: var(--teal); border: none; color: #fff;
+  font-size: .95rem; cursor: pointer; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+.play-btn:hover { background: var(--teal-lt); }
+.reset-btn {
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--bg); border: 1px solid var(--border);
+  color: var(--muted); font-size: .8rem; cursor: pointer; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+.reset-btn:hover { background: var(--border); }
+input[type=range] {
+  -webkit-appearance: none; appearance: none;
+  height: 4px; border-radius: 2px; background: var(--border);
+  outline: none; cursor: pointer;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 14px; height: 14px;
+  border-radius: 50%; background: var(--teal); cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0,0,0,.25);
+}
+#prog { flex: 1; height: 6px; }
+#prog::-webkit-slider-thumb { width: 18px; height: 18px; }
+#prog-lbl {
+  font-size: .72rem; color: var(--muted); white-space: nowrap;
+  min-width: 80px; text-align: right; font-variant-numeric: tabular-nums;
+}
+.spd-row {
+  display: flex; align-items: center; gap: 7px;
+  margin-bottom: 9px; font-size: .74rem; color: var(--muted);
+}
+#spd-sl { flex: 1; max-width: 130px; }
+#spd-lbl { min-width: 70px; font-weight: 700; color: var(--teal); font-size: .78rem; }
+.stats {
+  display: grid; grid-template-columns: repeat(4,1fr); gap: 5px;
+}
+.stat {
+  background: var(--bg); border-radius: 8px; padding: 7px 5px; text-align: center;
+}
+.stat-lbl { font-size: .6rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; display: block; margin-bottom: 2px; }
+.stat-val { font-size: .82rem; font-weight: 700; display: block; font-variant-numeric: tabular-nums; }
+
+/* ── Overlay ── */
+#overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 2000; padding: 20px;
+}
+.card {
+  background: #fff; border-radius: 20px; padding: 28px 22px;
+  max-width: 370px; width: 100%; text-align: center;
+}
+.card h2 { color: var(--teal); font-size: 1.2rem; margin-bottom: 10px; }
+.card p  { color: var(--muted); font-size: .85rem; line-height: 1.65; margin-bottom: 20px; }
+.c-btn {
+  width: 100%; padding: 12px; border-radius: 10px;
+  font-size: .92rem; font-family: inherit; cursor: pointer;
+  display: block; margin-bottom: 8px; border: none; transition: opacity .15s;
+}
+.c-btn:hover { opacity: .88; }
+.c-btn-p { background: var(--teal); color: #fff; }
+.c-btn-o { background: #fff; color: var(--teal); border: 2px solid var(--teal) !important; }
+.fmt {
+  margin-top: 14px; background: var(--bg); border-radius: 10px;
+  padding: 11px 12px; text-align: left; font-size: .74rem; color: var(--muted); line-height: 1.8;
+}
+.fmt code {
+  background: #e0e0e0; padding: 1px 4px; border-radius: 3px;
+  font-family: 'SF Mono', Consolas, monospace; font-size: .7rem;
+}
+
+/* ── Photo overlay ── */
+.photo-pin img {
+  width: 44px; height: 44px; object-fit: cover;
+  border-radius: 5px; border: 2.5px solid #fff;
+  box-shadow: 0 2px 8px rgba(0,0,0,.4); display: block;
+  cursor: pointer;
+}
+.photo-pin::after {
+  content: ''; display: block;
+  width: 0; height: 0; margin: 0 auto;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 7px solid #fff;
+}
+#photoModal {
+  position: fixed; inset: 0; background: rgba(0,0,0,.82);
+  display: none; align-items: center; justify-content: center;
+  z-index: 3000; padding: 20px; flex-direction: column; gap: 12px;
+}
+#photoModal.open { display: flex; }
+#photoModal img {
+  max-width: min(90vw, 600px); max-height: 70vh;
+  border-radius: 10px; box-shadow: 0 4px 24px rgba(0,0,0,.6);
+}
+#photoModal .ph-info {
+  color: #fff; font-size: .8rem; text-align: center; line-height: 1.6;
+}
+#photoModal .ph-info b { color: #80cbc4; }
+#photoModal .ph-close {
+  position: absolute; top: 16px; right: 18px;
+  background: rgba(255,255,255,.15); border: none; color: #fff;
+  font-size: 1.4rem; border-radius: 50%; width: 36px; height: 36px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+#tzRow {
+  display: none; align-items: center; gap: 8px;
+  padding: 6px 14px; background: #e8f5f1; border-top: 1px solid var(--border);
+  font-size: .74rem; color: var(--muted); flex-shrink: 0;
+}
+#tzRow select {
+  padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: .74rem; font-family: inherit; background: #fff;
+}
+#tzRow label { white-space: nowrap; }
+
+/* ── Edit mode ── */
+#editPanel {
+  background: #fff8f0; border-top: 2px solid #e65100;
+  padding: 10px 14px 12px; flex-shrink: 0;
+}
+.edit-hint {
+  font-size: .72rem; color: #8d6e63; margin-bottom: 8px; line-height: 1.55;
+}
+.edit-hint b { color: #e65100; }
+.edit-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.ebtn {
+  padding: 7px 13px; border: none; border-radius: 8px;
+  font-size: .78rem; font-family: inherit; cursor: pointer;
+  transition: opacity .15s; white-space: nowrap;
+}
+.ebtn:hover { opacity: .85; }
+.ebtn:disabled { opacity: .38; cursor: default; }
+.ebtn-accent  { background: #e65100; color: #fff; }
+.ebtn-primary { background: var(--teal); color: #fff; }
+.ebtn-ghost   { background: #efefef; color: #424242; }
+
+/* ── Marker pulse ── */
+@keyframes pulse {
+  0%   { transform: translate(-50%,-50%) scale(1); opacity: .7; }
+  100% { transform: translate(-50%,-50%) scale(3); opacity: 0; }
+}
+.dot-wrap { position: relative; width: 14px; height: 14px; }
+.dot-ring {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: rgba(46,125,107,.45);
+  position: absolute; top: 50%; left: 50%;
+  animation: pulse 1.8s ease-out infinite;
+}
+.dot-core {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--teal); border: 2.5px solid #fff;
+  box-shadow: 0 2px 6px rgba(0,0,0,.3);
+  position: relative; z-index: 1;
+}
+</style>
+</head>
+<body>
+
+<div id="hd">
+  <h1>📍 ASHIATO – GPS軌跡再生</h1>
+  <div class="tabs">
+    <button class="tab on" id="t-time" onclick="setMode('time')">時間速度一定</button>
+    <button class="tab"    id="t-dist" onclick="setMode('dist')">移動速度一定</button>
+  </div>
+  <button class="hd-btn follow-on" id="followBtn" onclick="toggleFollow()" title="地図追従">📍</button>
+  <button class="hd-btn" id="editBtn" onclick="toggleEdit()" title="軌跡を編集">✏️</button>
+  <label  class="hd-btn" title="写真を追加">
+    📷<input type="file" accept="image/*" multiple style="display:none" onchange="onPhotos(this)">
+  </label>
+  <label  class="hd-btn" title="ファイルを読み込む">
+    📁<input type="file" accept=".json,.geojson,.gpx,.kml" style="display:none" id="fileIn" onchange="onFile(this)">
+  </label>
+</div>
+
+<div id="map"></div>
+
+<!-- タイムゾーン設定バー（写真追加後に表示） -->
+<div id="tzRow">
+  <label>📷 写真のタイムゾーン:</label>
+  <select id="tzSel" onchange="rematAllPhotos()">
+    <option value="540">JST (UTC+9)</option>
+    <option value="480">CST (UTC+8)</option>
+    <option value="0">UTC</option>
+    <option value="-300">EST (UTC-5)</option>
+    <option value="-420">PDT (UTC-7)</option>
+    <option value="-480">PST (UTC-8)</option>
+  </select>
+  <label>　時刻補正:</label>
+  <input type="range" id="driftSl" min="-120" max="120" value="0" style="width:80px"
+         oninput="document.getElementById('driftLbl').textContent=this.value+'秒'; rematAllPhotos()">
+  <span id="driftLbl">0秒</span>
+  <button class="ebtn ebtn-ghost" style="margin-left:auto;font-size:.7rem" onclick="clearPhotos()">✕ 写真を消去</button>
+</div>
+
+<div id="panel">
+  <span class="mode-banner" id="modeBanner">時間速度一定モード — 実際の時間比率で再生</span>
+  <div class="prog-row">
+    <button class="play-btn"  id="playBtn"   onclick="togglePlay()">▶</button>
+    <button class="reset-btn" id="resetBtn"  onclick="doReset()" title="先頭に戻る">⏮</button>
+    <input  type="range" id="prog" min="0" max="10000" value="0"
+            oninput="onSeek(+this.value)" onmousedown="seekStart()" onmouseup="seekEnd()"
+            ontouchstart="seekStart()" ontouchend="seekEnd()">
+    <span id="prog-lbl">--</span>
+  </div>
+  <div class="spd-row">
+    <span id="spdLabel">再生速度:</span>
+    <input type="range" id="spd-sl" min="0" max="100" value="50" oninput="onSpdChange(+this.value)">
+    <span id="spd-lbl">60×</span>
+  </div>
+  <div class="stats">
+    <div class="stat"><span class="stat-lbl">現在時刻</span><span class="stat-val" id="s-clock">--:--:--</span></div>
+    <div class="stat"><span class="stat-lbl">経過時間</span><span class="stat-val" id="s-elapsed">0:00:00</span></div>
+    <div class="stat"><span class="stat-lbl">移動距離</span><span class="stat-val" id="s-dist">0 m</span></div>
+    <div class="stat"><span class="stat-lbl">速度</span>      <span class="stat-val" id="s-spd">-- km/h</span></div>
+  </div>
+</div>
+
+<!-- 写真詳細モーダル -->
+<div id="photoModal" onclick="closePhotoModal()">
+  <button class="ph-close" onclick="closePhotoModal()">✕</button>
+  <img id="photoModalImg" src="" alt="">
+  <div class="ph-info" id="photoModalInfo"></div>
+</div>
+
+<div id="editPanel" style="display:none">
+  <div class="edit-hint" id="editHint">ルート上の点をクリックして区間の<b>始点</b>・<b>終点</b>を選択 → 自動補正</div>
+  <div class="edit-actions">
+    <button class="ebtn ebtn-accent"  id="btnSmooth" onclick="applyAutoSmooth()" disabled>✨ 自動補正</button>
+    <button class="ebtn ebtn-ghost"   id="btnMove"   onclick="startMoveMode()"   disabled>↕ 点を移動</button>
+    <button class="ebtn ebtn-ghost"                  onclick="clearEditSel()">✕ 選択解除</button>
+    <button class="ebtn ebtn-ghost"   id="btnUndo"   onclick="undoEdit()"        disabled>↩ 元に戻す</button>
+    <button class="ebtn ebtn-primary"                onclick="exportCorrected()">💾 書き出す</button>
+  </div>
+</div>
+
+<div id="overlay">
+  <div class="card">
+    <h2>GPS軌跡を読み込む</h2>
+    <p>記録したGPSデータのファイルを選択するか、<br>サンプルデータで機能を試せます。</p>
+    <label class="c-btn c-btn-p" style="cursor:pointer">
+      📁　ファイルを選択
+      <input type="file" accept=".json,.geojson,.gpx,.kml" style="display:none" onchange="onFile(this)">
+    </label>
+    <button class="c-btn c-btn-o" onclick="loadDemo()">▶　サンプルデータで試す</button>
+    <div class="fmt">
+      <b>対応形式:</b> <code>JSON</code> <code>GeoJSON</code> <code>GPX</code> <code>KML</code> <code>Google Takeout</code><br>
+      <b>JSON例:</b> <code>[{"lat":35.68,"lng":139.69,"timestamp":1718000000000}, ...]</code><br>
+      必須: <code>lat</code> <code>lng</code>（時刻があれば「時間速度一定」も利用可）<br>
+      ※ GPX / KML はGoogleマイマップやTakeoutのエクスポートを読み込めます
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV/XN/WLs=" crossorigin=""></script>
+<script src="https://unpkg.com/exifr@7.1.3/dist/lite.umd.js"></script>
+<script>
+'use strict';
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let pts   = [];     // normalized GPS points
+let meta  = null;   // { totalTime, totalDist, cumTime[], cumDist[] }
+let mode  = 'time'; // 'time' | 'dist'
+let prog  = 0;      // 0..1
+let playing    = false;
+let followMap  = true;
+let seekActive = false;
+let rafId = null, lastRafTs = null;
+
+// ── Map ───────────────────────────────────────────────────────────────────────
+const map = L.map('map', { zoomControl: true });
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  maxZoom: 19
+}).addTo(map);
+
+const markerIcon = L.divIcon({
+  className: '',
+  html: '<div class="dot-wrap"><div class="dot-ring"></div><div class="dot-core"></div></div>',
+  iconSize: [14, 14], iconAnchor: [7, 7]
+});
+const startIcon = L.divIcon({
+  className: '',
+  html: '<div style="width:12px;height:12px;border-radius:50%;background:#4CAF50;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)"></div>',
+  iconSize: [12, 12], iconAnchor: [6, 6]
+});
+const endIcon = L.divIcon({
+  className: '',
+  html: '<div style="width:12px;height:12px;border-radius:50%;background:#f44336;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)"></div>',
+  iconSize: [12, 12], iconAnchor: [6, 6]
+});
+
+let routeLine   = null;
+let coveredLine = null;
+let curMarker   = null;
+let startMarker = null;
+let endMarker   = null;
+
+// ── Geo math ──────────────────────────────────────────────────────────────────
+function haversine(a, b) {
+  const R = 6371000;
+  const φ1 = a.lat * Math.PI / 180, φ2 = b.lat * Math.PI / 180;
+  const dφ = (b.lat - a.lat) * Math.PI / 180;
+  const dλ = (b.lng - a.lng) * Math.PI / 180;
+  const h  = Math.sin(dφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(dλ/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+function preprocess(arr) {
+  const n = arr.length;
+  const cumDist = new Float64Array(n);
+  const cumTime = new Float64Array(n);
+  for (let i = 1; i < n; i++) {
+    cumDist[i] = cumDist[i-1] + haversine(arr[i-1], arr[i]);
+    cumTime[i] = arr[i].timestamp - arr[0].timestamp; // ms
+  }
+  return { totalDist: cumDist[n-1], totalTime: cumTime[n-1], cumDist, cumTime };
+}
+
+// Binary search: largest i where arr[i] <= val (arr is non-decreasing)
+function bsearch(arr, val) {
+  let lo = 0, hi = arr.length - 2;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    arr[mid] <= val ? lo = mid : hi = mid - 1;
+  }
+  return lo;
+}
+
+// Get interpolated state at progress p (0..1)
+function stateAt(p) {
+  const n = pts.length;
+  if (!n) return null;
+  if (p <= 0) return { ...pts[0], distSoFar: 0 };
+  if (p >= 1) return { ...pts[n-1], distSoFar: meta.totalDist };
+
+  let idx, frac;
+  if (mode === 'time') {
+    const t  = p * meta.totalTime;
+    idx  = bsearch(meta.cumTime, t);
+    const t0 = meta.cumTime[idx], t1 = meta.cumTime[idx+1];
+    frac = t1 === t0 ? 0 : (t - t0) / (t1 - t0);
+  } else {
+    const d  = p * meta.totalDist;
+    idx  = bsearch(meta.cumDist, d);
+    const d0 = meta.cumDist[idx], d1 = meta.cumDist[idx+1];
+    frac = d1 === d0 ? 0 : (d - d0) / (d1 - d0);
+  }
+
+  const a = pts[idx], b = pts[idx+1];
+  const distSoFar = meta.cumDist[idx] + frac * (meta.cumDist[idx+1] - meta.cumDist[idx]);
+  return {
+    lat:       a.lat + (b.lat - a.lat) * frac,
+    lng:       a.lng + (b.lng - a.lng) * frac,
+    timestamp: a.timestamp + (b.timestamp - a.timestamp) * frac,
+    speed:     (a.speed != null && b.speed != null) ? a.speed + (b.speed - a.speed) * frac : null,
+    distSoFar
+  };
+}
+
+// ── Speed mapping (log scale) ─────────────────────────────────────────────────
+// Mode time: slider 0→100  maps to 1× → 3600× playback (at 50 → ~60×)
+// Mode dist: slider 0→100  maps to 1 m/s → 2500 m/s (at 50 → ~50 m/s)
+function sliderToSpeed(v) {
+  const t = v / 100;
+  return mode === 'time'
+    ? Math.pow(10, t * Math.log10(3600))   // 1× … 3600×
+    : Math.pow(10, t * Math.log10(2500));   // 1 … 2500 m/s
+}
+function formatSpeed(v) {
+  const s = sliderToSpeed(v);
+  const n = s < 10 ? s.toFixed(1) : Math.round(s);
+  return mode === 'time' ? `${n}×` : `${n} m/s`;
+}
+
+// ── Animation loop ────────────────────────────────────────────────────────────
+function rafLoop(ts) {
+  if (!playing) return;
+  if (lastRafTs === null) lastRafTs = ts;
+  const dt = Math.min((ts - lastRafTs) / 1000, 0.1); // cap at 100 ms
+  lastRafTs = ts;
+
+  const speed = sliderToSpeed(+document.getElementById('spd-sl').value);
+  if (mode === 'time') {
+    prog += meta.totalTime > 0 ? dt * speed / (meta.totalTime / 1000) : 0;
+  } else {
+    prog += meta.totalDist > 0 ? dt * speed / meta.totalDist : 0;
+  }
+
+  if (prog >= 1) {
+    prog = 1; playing = false; lastRafTs = null;
+    document.getElementById('playBtn').textContent = '▶';
+  }
+
+  render();
+  if (playing) rafId = requestAnimationFrame(rafLoop);
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function render() {
+  const s = stateAt(prog);
+  if (!s) return;
+
+  // Marker
+  curMarker.setLatLng([s.lat, s.lng]);
+  if (followMap && playing) map.panTo([s.lat, s.lng], { animate: false });
+
+  // Covered line
+  const threshold = mode === 'time' ? prog * meta.totalTime : prog * meta.totalDist;
+  const arr = mode === 'time' ? meta.cumTime : meta.cumDist;
+  const idx = bsearch(arr, threshold);
+  const lls = [];
+  for (let i = 0; i <= Math.min(idx, pts.length-1); i++) lls.push([pts[i].lat, pts[i].lng]);
+  lls.push([s.lat, s.lng]);
+  coveredLine.setLatLngs(lls);
+
+  // Progress slider
+  if (!seekActive) document.getElementById('prog').value = Math.round(prog * 10000);
+
+  // Progress label
+  const elapsedMs = s.timestamp - pts[0].timestamp;
+  if (mode === 'time') {
+    document.getElementById('prog-lbl').textContent =
+      fmtHMS(elapsedMs / 1000) + ' / ' + fmtHMS(meta.totalTime / 1000);
+  } else {
+    document.getElementById('prog-lbl').textContent =
+      fmtDist(s.distSoFar) + ' / ' + fmtDist(meta.totalDist);
+  }
+
+  // Stats
+  document.getElementById('s-clock').textContent =
+    new Date(s.timestamp).toLocaleTimeString('ja-JP', { hour12: false });
+  document.getElementById('s-elapsed').textContent = fmtHMS(elapsedMs / 1000);
+  document.getElementById('s-dist').textContent    = fmtDist(s.distSoFar);
+  document.getElementById('s-spd').textContent     =
+    s.speed != null ? (s.speed * 3.6).toFixed(1) + ' km/h' : '--';
+}
+
+// ── Format helpers ────────────────────────────────────────────────────────────
+function fmtHMS(totalSec) {
+  const s = Math.max(0, Math.floor(totalSec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${pad(m)}:${pad(sec)}`;
+  return `${m}:${pad(sec)}`;
+}
+function fmtDist(m) {
+  return m < 1000 ? `${Math.round(m)} m` : `${(m/1000).toFixed(2)} km`;
+}
+function pad(n) { return String(n).padStart(2, '0'); }
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+function togglePlay() {
+  if (!pts.length) return;
+  if (prog >= 1) prog = 0;
+  playing = !playing;
+  document.getElementById('playBtn').textContent = playing ? '⏸' : '▶';
+  if (playing) { lastRafTs = null; rafId = requestAnimationFrame(rafLoop); }
+}
+
+function doReset() {
+  playing = false; lastRafTs = null; prog = 0;
+  if (rafId) cancelAnimationFrame(rafId);
+  document.getElementById('playBtn').textContent = '▶';
+  render();
+  if (routeLine) map.fitBounds(routeLine.getBounds(), { padding: [30, 30] });
+}
+
+function seekStart() { seekActive = true; }
+function seekEnd()   {
+  seekActive = false;
+  if (playing) { lastRafTs = null; rafId = requestAnimationFrame(rafLoop); }
+}
+function onSeek(v) {
+  prog = v / 10000;
+  if (!playing) render();
+}
+
+function onSpdChange(v) {
+  document.getElementById('spd-lbl').textContent = formatSpeed(v);
+}
+
+function toggleFollow() {
+  followMap = !followMap;
+  const btn = document.getElementById('followBtn');
+  btn.classList.toggle('follow-on', followMap);
+  btn.title = followMap ? '地図追従 ON' : '地図追従 OFF';
+}
+
+function setMode(m) {
+  if (m === mode) return;
+  mode = m;
+  document.getElementById('t-time').classList.toggle('on', m === 'time');
+  document.getElementById('t-dist').classList.toggle('on', m === 'dist');
+
+  const banner = { time: '時間速度一定モード — 実際の時間比率で再生',
+                   dist: '移動速度一定モード — 経路を一定速度で再生' };
+  document.getElementById('modeBanner').textContent = banner[m];
+  document.getElementById('spdLabel').textContent = m === 'time' ? '再生速度:' : '移動速度:';
+  document.getElementById('spd-lbl').textContent = formatSpeed(+document.getElementById('spd-sl').value);
+
+  if (pts.length) render();
+}
+
+// ── Load data ─────────────────────────────────────────────────────────────────
+function loadData(raw) {
+  if (!raw || raw.length < 2) { alert('有効なGPSデータが2点以上必要です'); return; }
+
+  let normalized = raw.map(p => ({
+    lat:       +(p.lat ?? p.latitude  ?? 0),
+    lng:       +(p.lng ?? p.lon ?? p.longitude ?? 0),
+    timestamp: p.timestamp == null ? NaN
+               : (typeof p.timestamp === 'string' ? new Date(p.timestamp).getTime() : +p.timestamp),
+    speed:     p.speed     != null ? +p.speed    : null,
+  })).filter(p => p.lat && p.lng);
+
+  // タイムスタンプを持つ点が無い（GPX/KMLのルート等）→ 1秒等間隔で補完。
+  // 時間が無い軌跡は「移動速度一定」モードでの再生が前提になる。
+  const hasTime = normalized.some(p => Number.isFinite(p.timestamp));
+  if (!hasTime) {
+    const base = Date.now();
+    normalized.forEach((p, i) => { p.timestamp = base + i * 1000; });
+  } else {
+    normalized = normalized.filter(p => Number.isFinite(p.timestamp))
+                           .sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  if (normalized.length < 2) { alert('有効なGPSデータが不足しています'); return; }
+
+  pts  = normalized;
+  meta = preprocess(pts);
+  prog = 0; playing = false; lastRafTs = null;
+  document.getElementById('playBtn').textContent = '▶';
+  document.getElementById('overlay').style.display = 'none';
+
+  // Draw layers
+  [routeLine, coveredLine, curMarker, startMarker, endMarker].forEach(l => l && map.removeLayer(l));
+  const lls = pts.map(p => [p.lat, p.lng]);
+  routeLine   = L.polyline(lls, { color: '#c8c8c8', weight: 4 }).addTo(map);
+  coveredLine = L.polyline([], { color: '#2E7D6B', weight: 4 }).addTo(map);
+  startMarker = L.marker(lls[0],        { icon: startIcon }).addTo(map);
+  endMarker   = L.marker(lls[lls.length-1], { icon: endIcon }).addTo(map);
+  curMarker   = L.marker(lls[0],        { icon: markerIcon, zIndexOffset: 1000 }).addTo(map);
+
+  map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
+  onSpdChange(+document.getElementById('spd-sl').value);
+  render();
+}
+
+function onFile(input) {
+  const f = input.files[0]; if (!f) return;
+  const name = (f.name || '').toLowerCase();
+  const r = new FileReader();
+  r.onload = e => {
+    try {
+      const text = e.target.result;
+      if (name.endsWith('.gpx'))       loadData(parseGpx(text));
+      else if (name.endsWith('.kml'))  loadData(parseKml(text));
+      else                             loadJsonLike(text);
+    } catch(err) { alert('読み込みエラー: ' + err.message); }
+  };
+  r.readAsText(f);
+  input.value = '';
+}
+
+// JSON配列 / GeoJSON / Google Takeout を読み込む
+function loadJsonLike(text) {
+  const d = JSON.parse(text);
+  if (Array.isArray(d)) {
+    loadData(d);
+  } else if (d.type === 'FeatureCollection') {
+    // Point の集合、または LineString の座標列の両方に対応
+    const pts = [];
+    for (const ft of d.features) {
+      const g = ft.geometry; if (!g) continue;
+      if (g.type === 'Point') {
+        pts.push({ lng: g.coordinates[0], lat: g.coordinates[1], altitude: g.coordinates[2], ...ft.properties });
+      } else if (g.type === 'LineString') {
+        g.coordinates.forEach(c => pts.push({ lng: c[0], lat: c[1], altitude: c[2] }));
+      }
+    }
+    loadData(pts);
+  } else if (Array.isArray(d.locations)) {
+    // Google Takeout ロケーション履歴（latE7 / lonE7、timestamp は ISO 文字列）
+    loadData(d.locations.map(l => ({
+      lat: l.latitudeE7 / 1e7, lng: l.longitudeE7 / 1e7,
+      timestamp: l.timestamp ?? (l.timestampMs ? +l.timestampMs : null),
+    })));
+  } else {
+    alert('未対応のJSONフォーマットです');
+  }
+}
+
+// GPX: <trkpt>/<rtept> の lat/lon 属性 + 任意の <time>/<ele>
+function parseGpx(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.querySelector('parsererror')) throw new Error('GPXの解析に失敗しました');
+  let nodes = [...doc.getElementsByTagName('trkpt')];
+  if (!nodes.length) nodes = [...doc.getElementsByTagName('rtept')]; // ルート点
+  return nodes.map(n => {
+    const t = n.getElementsByTagName('time')[0]?.textContent;
+    return {
+      lat: +n.getAttribute('lat'),
+      lng: +n.getAttribute('lon'),
+      timestamp: t ? new Date(t).getTime() : null,
+    };
+  });
+}
+
+// KML: <coordinates> 内は「経度,緯度,標高」を空白/改行区切りで列挙。
+// gx:Track（<gx:coord> + <when>）にも対応する。
+function parseKml(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.querySelector('parsererror')) throw new Error('KMLの解析に失敗しました');
+  const pts = [];
+
+  // gx:Track（時刻付き）
+  const tracks = doc.getElementsByTagName('gx:Track');
+  for (const tr of tracks) {
+    const whens  = [...tr.getElementsByTagName('when')].map(w => w.textContent);
+    const coords = [...tr.getElementsByTagName('gx:coord')].map(c => c.textContent.trim());
+    coords.forEach((c, i) => {
+      const [lng, lat] = c.split(/\s+/).map(Number);
+      pts.push({ lat, lng, timestamp: whens[i] ? new Date(whens[i]).getTime() : null });
+    });
+  }
+  if (pts.length) return pts;
+
+  // 通常の <coordinates>（LineString / Point）
+  for (const co of doc.getElementsByTagName('coordinates')) {
+    co.textContent.trim().split(/\s+/).forEach(tuple => {
+      const [lng, lat] = tuple.split(',').map(Number);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) pts.push({ lat, lng, timestamp: null });
+    });
+  }
+  return pts;
+}
+
+// ── Demo data (渋谷付近の模擬ウォーク) ──────────────────────────────────────
+function loadDemo() {
+  const baseLat = 35.6580, baseLng = 139.7016;
+  const t0 = new Date('2024-06-01T09:00:00+09:00').getTime();
+  const segs = [
+    { bear: 10,  dist: 350, spd: 1.3, label: '徒歩' },
+    { bear: 80,  dist: 180, spd: 4.5, label: 'ジョグ' },
+    { bear: 140, dist: 420, spd: 1.4, label: '徒歩' },
+    { bear: 200, dist: 150, spd: 0.6, label: 'のんびり' },
+    { bear: 260, dist: 500, spd: 5.2, label: 'ランニング' },
+    { bear: 320, dist: 280, spd: 1.3, label: '徒歩' },
+    { bear: 30,  dist: 320, spd: 0.8, label: '立ち止まり気味' },
+    { bear: 190, dist: 200, spd: 1.5, label: '帰路' },
+  ];
+  const raw = [];
+  let lat = baseLat, lng = baseLng, t = t0;
+  for (const seg of segs) {
+    const n   = Math.ceil(seg.dist / 8);
+    const br  = seg.bear * Math.PI / 180;
+    const dl  = Math.cos(br) / 111111;
+    const dg  = Math.sin(br) / (111111 * Math.cos(lat * Math.PI / 180));
+    const sd  = seg.dist / n, ms = sd / seg.spd * 1000;
+    for (let i = 0; i < n; i++) {
+      raw.push({
+        lat: lat + (Math.random() - .5) * 4e-5,
+        lng: lng + (Math.random() - .5) * 4e-5,
+        timestamp: t,
+        speed: seg.spd + (Math.random() - .5) * .4,
+      });
+      lat += dl * sd; lng += dg * sd; t += ms;
+    }
+  }
+  loadData(raw);
+}
+
+// ── Photo overlay ─────────────────────────────────────────────────────────────
+let photos = []; // { file, url, lat, lng, takenAt, matchMethod }
+let photoMarkerLayers = [];
+
+async function onPhotos(input) {
+  const files = [...input.files]; if (!files.length) return;
+  for (const f of files) {
+    try {
+      const exif = window.exifr ? await exifr.parse(f, { gps: true, exif: true }) : null;
+      const entry = { file: f, url: URL.createObjectURL(f), exif };
+      photos.push(entry);
+    } catch (e) { console.warn('EXIF read error', f.name, e); }
+  }
+  input.value = '';
+  document.getElementById('tzRow').style.display = photos.length ? 'flex' : 'none';
+  rematAllPhotos();
+}
+
+// タイムゾーン/ドリフト変更時に全写真を再マッチング
+function rematAllPhotos() {
+  photoMarkerLayers.forEach(l => map.removeLayer(l));
+  photoMarkerLayers = [];
+  const tzMin  = +document.getElementById('tzSel').value;    // 分単位のオフセット
+  const driftS = +document.getElementById('driftSl').value;  // 秒
+  const tzMs   = tzMin * 60 * 1000;
+  const driftMs = driftS * 1000;
+  for (const ph of photos) {
+    const pos = resolvePhotoPos(ph.exif, tzMs, driftMs);
+    if (!pos) continue;
+    ph.lat = pos.lat; ph.lng = pos.lng; ph.matchMethod = pos.method;
+    addPhotoMarker(ph);
+  }
+}
+
+// 座標決定: EXIF GPS → 軌跡タイムスタンプ補間 の順
+function resolvePhotoPos(exif, tzOffsetMs, driftMs) {
+  if (!exif) return null;
+
+  // 優先1: EXIF GPS
+  if (exif.latitude && exif.longitude)
+    return { lat: exif.latitude, lng: exif.longitude, method: 'exif_gps' };
+
+  // 優先2: 撮影日時 → 軌跡補間
+  const raw = exif.DateTimeOriginal || exif.DateTime || exif.CreateDate;
+  if (!raw || !pts.length) return null;
+
+  const localMs = parseExifDate(raw);
+  if (!localMs) return null;
+
+  // EXIFのローカル時刻をUTCに変換（タイムゾーン + ドリフト補正）
+  const utcMs = localMs - tzOffsetMs + driftMs;
+  if (utcMs < pts[0].timestamp || utcMs > pts[pts.length - 1].timestamp) return null;
+
+  const idx = bsearch(meta.cumTime, utcMs - pts[0].timestamp);
+  const a = pts[idx], b = pts[idx + 1];
+  if (!b) return { lat: a.lat, lng: a.lng, method: 'timestamp' };
+  const frac = (utcMs - a.timestamp) / (b.timestamp - a.timestamp);
+  return {
+    lat: a.lat + (b.lat - a.lat) * frac,
+    lng: a.lng + (b.lng - a.lng) * frac,
+    method: 'timestamp'
+  };
+}
+
+// "2024:06:01 09:15:30" → ミリ秒（ローカル時刻として）
+function parseExifDate(s) {
+  const m = String(s).match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+  if (!m) return null;
+  return new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]).getTime();
+}
+
+function addPhotoMarker(ph) {
+  const icon = L.divIcon({
+    className: 'photo-pin',
+    html: `<img src="${ph.url}" alt="" title="${ph.file.name}\n${ph.matchMethod === 'exif_gps' ? 'GPS座標' : '日時で紐付け'}">`,
+    iconSize: [48, 55], iconAnchor: [24, 55]
+  });
+  const m = L.marker([ph.lat, ph.lng], { icon, zIndexOffset: 500 }).addTo(map);
+  m.on('click', e => {
+    L.DomEvent.stopPropagation(e);
+    openPhotoModal(ph);
+  });
+  photoMarkerLayers.push(m);
+}
+
+function openPhotoModal(ph) {
+  document.getElementById('photoModalImg').src = ph.url;
+  const method = ph.matchMethod === 'exif_gps' ? '📡 EXIF GPS座標' : '🕐 撮影日時で紐付け';
+  const date   = ph.exif?.DateTimeOriginal
+                 ? String(ph.exif.DateTimeOriginal).replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1/$2/$3')
+                 : ph.file.name;
+  document.getElementById('photoModalInfo').innerHTML =
+    `<b>${ph.file.name}</b><br>${date}<br>紐付け: ${method}`;
+  document.getElementById('photoModal').classList.add('open');
+}
+function closePhotoModal() {
+  document.getElementById('photoModal').classList.remove('open');
+}
+
+function clearPhotos() {
+  photos.forEach(ph => URL.revokeObjectURL(ph.url));
+  photos = [];
+  photoMarkerLayers.forEach(l => map.removeLayer(l));
+  photoMarkerLayers = [];
+  document.getElementById('tzRow').style.display = 'none';
+}
+
+// ── Edit mode ─────────────────────────────────────────────────────────────────
+let editMode = false;
+let editLayers = [];
+let selA = -1, selB = -1;
+let editUndo = [];
+let movePending = false;
+
+function toggleEdit() {
+  if (!pts.length) return;
+  editMode = !editMode;
+  const btn = document.getElementById('editBtn');
+  btn.classList.toggle('follow-on', editMode);
+  btn.title = editMode ? '編集モード終了' : '軌跡を編集';
+  document.getElementById('editPanel').style.display = editMode ? 'block' : 'none';
+  document.getElementById('panel').style.display    = editMode ? 'none'  : 'block';
+  if (editMode) {
+    playing = false; document.getElementById('playBtn').textContent = '▶';
+    renderEditLayers();
+  } else {
+    clearEditLayers(); selA = selB = -1; movePending = false;
+    map.getContainer().style.cursor = '';
+  }
+}
+
+function renderEditLayers() {
+  clearEditLayers();
+  const step = Math.max(1, Math.ceil(pts.length / 2000));
+  for (let i = 0; i < pts.length; i += step) {
+    const sA = Math.min(selA, selB), sB = Math.max(selA, selB);
+    const isEnd = i === selA || (selB >= 0 && i === selB);
+    const inSel = selA >= 0 && selB >= 0 && i >= sA && i <= sB;
+    const c = L.circleMarker([pts[i].lat, pts[i].lng], {
+      radius:      isEnd ? 8 : inSel ? 5 : 4,
+      color:       '#fff', weight: 1.5,
+      fillColor:   isEnd ? '#e65100' : inSel ? '#ff9800' : 'rgba(46,125,107,.65)',
+      fillOpacity: 0.92, interactive: true
+    }).addTo(map);
+    c.on('click', e => { L.DomEvent.stopPropagation(e); onEditClick(i); });
+    editLayers.push(c);
+  }
+}
+
+function clearEditLayers() {
+  editLayers.forEach(l => map.removeLayer(l)); editLayers = [];
+}
+
+function onEditClick(i) {
+  if (movePending) return;
+  if (selA < 0)      { selA = i; }
+  else if (selB < 0) { selB = i; }
+  else               { selA = i; selB = -1; }
+  updateEditUI();
+  clearEditLayers(); renderEditLayers();
+}
+
+function updateEditUI() {
+  const hasRange = selA >= 0 && selB >= 0 && selA !== selB;
+  const hasOne   = selA >= 0 && selB < 0;
+  document.getElementById('btnSmooth').disabled = !hasRange;
+  document.getElementById('btnMove').disabled   = !(hasOne || hasRange);
+  let hint = 'ルート上の点をクリックして区間の<b>始点</b>・<b>終点</b>を選択 → 自動補正';
+  if (hasOne)   hint = `始点 #${selA} 選択済 — 続けて<b>終点</b>をクリック（または「点を移動」で1点移動）`;
+  if (hasRange) hint = `区間 #${Math.min(selA,selB)}〜#${Math.max(selA,selB)}（${Math.abs(selB-selA)+1}点）選択中`;
+  document.getElementById('editHint').innerHTML = hint;
+}
+
+function clearEditSel() {
+  selA = selB = -1; movePending = false;
+  map.getContainer().style.cursor = '';
+  updateEditUI(); clearEditLayers(); renderEditLayers();
+}
+
+// Outlier removal + Gaussian smooth on index range [a, b]
+function applyAutoSmooth() {
+  if (selA < 0 || selB < 0 || selA === selB) return;
+  const a = Math.min(selA, selB), b = Math.max(selA, selB);
+  editUndo.push(pts.map(p => ({...p})));
+  document.getElementById('btnUndo').disabled = false;
+
+  const newPts = pts.map(p => ({...p}));
+
+  // Pass 1: collect non-outlier indices in [a, b]
+  const keep = [a];
+  for (let i = a + 1; i <= b; i++) {
+    const prev = newPts[keep[keep.length - 1]];
+    const d  = haversine(prev, newPts[i]);
+    const dt = Math.max(1, (newPts[i].timestamp - prev.timestamp) / 1000);
+    if (d / dt < 55) keep.push(i); // < ~200 km/h → keep
+  }
+  if (keep[keep.length - 1] !== b) keep.push(b);
+
+  // Pass 2: Gaussian smooth (endpoints a, b fixed)
+  const sigma = 2.5, R = Math.ceil(2.5 * sigma);
+  for (let ki = 1; ki < keep.length - 1; ki++) {
+    let wlat = 0, wlng = 0, wsum = 0;
+    for (let kj = Math.max(0, ki - R); kj <= Math.min(keep.length - 1, ki + R); kj++) {
+      const w = Math.exp(-((ki - kj) ** 2) / (2 * sigma ** 2));
+      wlat += w * newPts[keep[kj]].lat;
+      wlng += w * newPts[keep[kj]].lng;
+      wsum += w;
+    }
+    newPts[keep[ki]] = { ...newPts[keep[ki]], lat: wlat / wsum, lng: wlng / wsum };
+  }
+
+  pts = newPts; meta = preprocess(pts);
+  routeLine.setLatLngs(pts.map(p => [p.lat, p.lng]));
+  coveredLine.setLatLngs([]); prog = 0; render();
+  selA = selB = -1; clearEditLayers(); renderEditLayers(); updateEditUI();
+}
+
+// Click map to relocate selected point (single point or midpoint of range)
+function startMoveMode() {
+  const target = (selA >= 0 && selB >= 0) ? Math.round((selA + selB) / 2) : selA;
+  movePending = true;
+  map.getContainer().style.cursor = 'crosshair';
+  document.getElementById('editHint').innerHTML = `点 #${target} の移動先を<b>地図上でクリック</b>`;
+  map.once('click', e => {
+    movePending = false;
+    map.getContainer().style.cursor = '';
+    editUndo.push(pts.map(p => ({...p})));
+    document.getElementById('btnUndo').disabled = false;
+    pts[target] = { ...pts[target], lat: e.latlng.lat, lng: e.latlng.lng };
+    meta = preprocess(pts);
+    routeLine.setLatLngs(pts.map(p => [p.lat, p.lng]));
+    coveredLine.setLatLngs([]); prog = 0; render();
+    selA = selB = -1; clearEditLayers(); renderEditLayers(); updateEditUI();
+  });
+}
+
+function undoEdit() {
+  if (!editUndo.length) return;
+  pts = editUndo.pop(); meta = preprocess(pts);
+  routeLine.setLatLngs(pts.map(p => [p.lat, p.lng]));
+  coveredLine.setLatLngs([]); prog = 0; render();
+  selA = selB = -1; clearEditLayers(); renderEditLayers(); updateEditUI();
+  document.getElementById('btnUndo').disabled = editUndo.length === 0;
+}
+
+function exportCorrected() {
+  const out = pts.map(p => ({
+    lat: +p.lat.toFixed(7), lng: +p.lng.toFixed(7), timestamp: p.timestamp,
+    ...(p.speed != null ? { speed: +p.speed.toFixed(3) } : {})
+  }));
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `ashiato-corrected-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click(); URL.revokeObjectURL(a.href);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+onSpdChange(50);
+map.on('dragstart', () => { followMap = false; document.getElementById('followBtn').classList.remove('follow-on'); });
+</script>
+</body>
+</html>
