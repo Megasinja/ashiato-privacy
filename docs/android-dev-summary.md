@@ -363,10 +363,16 @@ fun douglasPeucker(points: List<LatLng>, epsilon: Double): List<LatLng> {
 | **GeoJSON** | Web汎用 | `Point` と `LineString` 両方に対応 |
 | **Google Takeout JSON** | 自分のロケーション履歴 | `latitudeE7` / `longitudeE7`（×10^-7 で度に変換） |
 
-**Google Directions API の規約上の制限**:
-経路検索結果をGoogleマップ以外の地図に保存・表示することは規約違反。
-アプリ内のルート検索には OSS ルーティング（OSRM / Valhalla / GraphHopper）を使う。
-インポートできるのは「自分のデータ（Takeout）」と「自分で作ったマイマップKML」のみ。
+**ルート検索APIの選び方（詳細は `routing-api-options.md`）**:
+- **Google Directions API**: 経路の**恒久保存は不可**（30日以内の一時キャッシュのみ）。
+  「基準ルートとして保存」には使えない。
+- **車/徒歩/自転車で保存して使う**: OpenRouteService / GraphHopper / Valhalla
+  （OSM・ODbL。帰属表示＋ShareAlikeを守れば保存可）。**自前ホスト推奨**。
+- **電車/バス（日本）**: 駅すぱあと API（無料プランあり。Yahoo!乗換案内の中身も
+  これ）／ NAVITIME API。鉄道区間のスナップ用の路線・駅データ供給源にもなる。
+- **Yahoo!地図/乗換案内**: GPX/KMLの公式エクスポートが無いためファイル取り込みは不可。
+  使うならインポートではなくAPI連携。ただしYOLPは画像/JS寄りで公共交通も無い。
+- インポートできるのは「自分のデータ（Takeout）」「マイマップKML/KMZ」「各種アプリのGPX」。
 
 ### 5-2. KMLパース時の注意点
 
@@ -701,4 +707,4 @@ Android実装の前にデータや動作を検証するために使える。
 
 ---
 
-*このドキュメントは会話の設計議論をまとめたものです。実装時は各セクションの詳細設計（`docs/battery-optimization.md`、`docs/route-matching-and-import.md`、`docs/photo-gps-matching.md`）も参照してください。*
+*このドキュメントは会話の設計議論をまとめたものです。実装時は各セクションの詳細設計（`docs/battery-optimization.md`、`docs/route-matching-and-import.md`、`docs/routing-api-options.md`、`docs/photo-gps-matching.md`）も参照してください。*

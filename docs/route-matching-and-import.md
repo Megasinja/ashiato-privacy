@@ -144,11 +144,17 @@ UI 案:
 ### 注意: Directions API のルートをそのまま保存できるか
 
 ユーザーが**アプリ内でルート検索**する場合、バックエンドの規約に注意:
-- **Google Directions API**: 取得した経路を Google マップ以外の地図に
-  表示・保存することは規約で制限される（§4 参照）。基準ルート用途には使えない
-- **OSRM / Valhalla / GraphHopper（OSS, セルフホスト）**: 制限なし。
-  検索ルートを保存・スナップ基準に使える。**これを推奨**
-- **OpenRouteService / Mapbox Directions**: 各社規約に従えば保存可（要確認）
+- **Google Directions API**: 経路ジオメトリの**恒久保存は不可**（パフォーマンス
+  目的の30日以内の一時キャッシュのみ可、place_idは無期限）。基準ルートとして
+  永続保存する用途には使えない
+- **OpenRouteService / GraphHopper / Valhalla（OSS, OSM/ODbL）**: 帰属表示と
+  ShareAlikeを守れば保存可。検索ルートを基準線に使える。**これを推奨**
+- **駅すぱあと API / NAVITIME API**: 日本の公共交通（電車・バス）対応。契約に
+  従い保存可。鉄道区間の基準ルート取得に最適
+- **Mapbox Directions**: 規約に従えば保存可（要確認）
+
+> ルート検索・インポートの実調査は別途 `routing-api-options.md` を参照。
+> Yahoo、駅すぱあと、NAVITIME 等の国内サービスの比較を含む。
 
 ---
 
@@ -163,7 +169,8 @@ UI 案:
 | **Google Takeout（自分のロケーション履歴 / タイムライン）** | ✅ 可 | 自分のデータのエクスポート。KML / JSON で出力でき、取り込み可 |
 | **Google マイマップ** | ✅ 可 | KML / KMZ でエクスポート可能。ユーザーが作った地図データ |
 | **共有された経路URL（goo.gl/maps 等）の自動解析** | ⚠️ 非推奨 | スクレイピングは規約違反リスク。安定もしない |
-| **Directions API の経路を保存** | ❌ 不可 | Google Maps Platform 規約: 結果を Google マップ以外で保存・表示することを禁止 |
+| **Directions API の経路を恒久保存** | ❌ 不可 | Google Maps Platform 規約: 経路は30日以内の一時キャッシュのみ可、恒久保存は不可（place_idは無期限） |
+| **Yahoo!地図 / 乗換案内のルート** | ⚠️ ほぼ不可 | GPX/KMLの公式エクスポートが無い。API連携で代替する |
 
 **結論**: 「Googleマップからのインポート」は
 **①Google Takeout（自分の履歴）と ②マイマップの KML/KMZ** に対応する形にする。
