@@ -153,6 +153,27 @@ input[type=range]::-webkit-slider-thumb {
   font-family: 'SF Mono', Consolas, monospace; font-size: .7rem;
 }
 
+/* ── Edit mode ── */
+#editPanel {
+  background: #fff8f0; border-top: 2px solid #e65100;
+  padding: 10px 14px 12px; flex-shrink: 0;
+}
+.edit-hint {
+  font-size: .72rem; color: #8d6e63; margin-bottom: 8px; line-height: 1.55;
+}
+.edit-hint b { color: #e65100; }
+.edit-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.ebtn {
+  padding: 7px 13px; border: none; border-radius: 8px;
+  font-size: .78rem; font-family: inherit; cursor: pointer;
+  transition: opacity .15s; white-space: nowrap;
+}
+.ebtn:hover { opacity: .85; }
+.ebtn:disabled { opacity: .38; cursor: default; }
+.ebtn-accent  { background: #e65100; color: #fff; }
+.ebtn-primary { background: var(--teal); color: #fff; }
+.ebtn-ghost   { background: #efefef; color: #424242; }
+
 /* ── Marker pulse ── */
 @keyframes pulse {
   0%   { transform: translate(-50%,-50%) scale(1); opacity: .7; }
@@ -182,6 +203,7 @@ input[type=range]::-webkit-slider-thumb {
     <button class="tab"    id="t-dist" onclick="setMode('dist')">移動速度一定</button>
   </div>
   <button class="hd-btn follow-on" id="followBtn" onclick="toggleFollow()" title="地図追従">📍</button>
+  <button class="hd-btn" id="editBtn" onclick="toggleEdit()" title="軌跡を編集">✏️</button>
   <label  class="hd-btn" title="ファイルを読み込む">
     📁<input type="file" accept=".json,.geojson,.gpx,.kml" style="display:none" id="fileIn" onchange="onFile(this)">
   </label>
@@ -209,6 +231,17 @@ input[type=range]::-webkit-slider-thumb {
     <div class="stat"><span class="stat-lbl">経過時間</span><span class="stat-val" id="s-elapsed">0:00:00</span></div>
     <div class="stat"><span class="stat-lbl">移動距離</span><span class="stat-val" id="s-dist">0 m</span></div>
     <div class="stat"><span class="stat-lbl">速度</span>      <span class="stat-val" id="s-spd">-- km/h</span></div>
+  </div>
+</div>
+
+<div id="editPanel" style="display:none">
+  <div class="edit-hint" id="editHint">ルート上の点をクリックして区間の<b>始点</b>・<b>終点</b>を選択 → 自動補正</div>
+  <div class="edit-actions">
+    <button class="ebtn ebtn-accent"  id="btnSmooth" onclick="applyAutoSmooth()" disabled>✨ 自動補正</button>
+    <button class="ebtn ebtn-ghost"   id="btnMove"   onclick="startMoveMode()"   disabled>↕ 点を移動</button>
+    <button class="ebtn ebtn-ghost"                  onclick="clearEditSel()">✕ 選択解除</button>
+    <button class="ebtn ebtn-ghost"   id="btnUndo"   onclick="undoEdit()"        disabled>↩ 元に戻す</button>
+    <button class="ebtn ebtn-primary"                onclick="exportCorrected()">💾 書き出す</button>
   </div>
 </div>
 
@@ -648,6 +681,156 @@ function loadDemo() {
     }
   }
   loadData(raw);
+}
+
+// ── Edit mode ─────────────────────────────────────────────────────────────────
+let editMode = false;
+let editLayers = [];
+let selA = -1, selB = -1;
+let editUndo = [];
+let movePending = false;
+
+function toggleEdit() {
+  if (!pts.length) return;
+  editMode = !editMode;
+  const btn = document.getElementById('editBtn');
+  btn.classList.toggle('follow-on', editMode);
+  btn.title = editMode ? '編集モード終了' : '軌跡を編集';
+  document.getElementById('editPanel').style.display = editMode ? 'block' : 'none';
+  document.getElementById('panel').style.display    = editMode ? 'none'  : 'block';
+  if (editMode) {
+    playing = false; document.getElementById('playBtn').textContent = '▶';
+    renderEditLayers();
+  } else {
+    clearEditLayers(); selA = selB = -1; movePending = false;
+    map.getContainer().style.cursor = '';
+  }
+}
+
+function renderEditLayers() {
+  clearEditLayers();
+  const step = Math.max(1, Math.ceil(pts.length / 2000));
+  for (let i = 0; i < pts.length; i += step) {
+    const sA = Math.min(selA, selB), sB = Math.max(selA, selB);
+    const isEnd = i === selA || (selB >= 0 && i === selB);
+    const inSel = selA >= 0 && selB >= 0 && i >= sA && i <= sB;
+    const c = L.circleMarker([pts[i].lat, pts[i].lng], {
+      radius:      isEnd ? 8 : inSel ? 5 : 4,
+      color:       '#fff', weight: 1.5,
+      fillColor:   isEnd ? '#e65100' : inSel ? '#ff9800' : 'rgba(46,125,107,.65)',
+      fillOpacity: 0.92, interactive: true
+    }).addTo(map);
+    c.on('click', e => { L.DomEvent.stopPropagation(e); onEditClick(i); });
+    editLayers.push(c);
+  }
+}
+
+function clearEditLayers() {
+  editLayers.forEach(l => map.removeLayer(l)); editLayers = [];
+}
+
+function onEditClick(i) {
+  if (movePending) return;
+  if (selA < 0)      { selA = i; }
+  else if (selB < 0) { selB = i; }
+  else               { selA = i; selB = -1; }
+  updateEditUI();
+  clearEditLayers(); renderEditLayers();
+}
+
+function updateEditUI() {
+  const hasRange = selA >= 0 && selB >= 0 && selA !== selB;
+  const hasOne   = selA >= 0 && selB < 0;
+  document.getElementById('btnSmooth').disabled = !hasRange;
+  document.getElementById('btnMove').disabled   = !(hasOne || hasRange);
+  let hint = 'ルート上の点をクリックして区間の<b>始点</b>・<b>終点</b>を選択 → 自動補正';
+  if (hasOne)   hint = `始点 #${selA} 選択済 — 続けて<b>終点</b>をクリック（または「点を移動」で1点移動）`;
+  if (hasRange) hint = `区間 #${Math.min(selA,selB)}〜#${Math.max(selA,selB)}（${Math.abs(selB-selA)+1}点）選択中`;
+  document.getElementById('editHint').innerHTML = hint;
+}
+
+function clearEditSel() {
+  selA = selB = -1; movePending = false;
+  map.getContainer().style.cursor = '';
+  updateEditUI(); clearEditLayers(); renderEditLayers();
+}
+
+// Outlier removal + Gaussian smooth on index range [a, b]
+function applyAutoSmooth() {
+  if (selA < 0 || selB < 0 || selA === selB) return;
+  const a = Math.min(selA, selB), b = Math.max(selA, selB);
+  editUndo.push(pts.map(p => ({...p})));
+  document.getElementById('btnUndo').disabled = false;
+
+  const newPts = pts.map(p => ({...p}));
+
+  // Pass 1: collect non-outlier indices in [a, b]
+  const keep = [a];
+  for (let i = a + 1; i <= b; i++) {
+    const prev = newPts[keep[keep.length - 1]];
+    const d  = haversine(prev, newPts[i]);
+    const dt = Math.max(1, (newPts[i].timestamp - prev.timestamp) / 1000);
+    if (d / dt < 55) keep.push(i); // < ~200 km/h → keep
+  }
+  if (keep[keep.length - 1] !== b) keep.push(b);
+
+  // Pass 2: Gaussian smooth (endpoints a, b fixed)
+  const sigma = 2.5, R = Math.ceil(2.5 * sigma);
+  for (let ki = 1; ki < keep.length - 1; ki++) {
+    let wlat = 0, wlng = 0, wsum = 0;
+    for (let kj = Math.max(0, ki - R); kj <= Math.min(keep.length - 1, ki + R); kj++) {
+      const w = Math.exp(-((ki - kj) ** 2) / (2 * sigma ** 2));
+      wlat += w * newPts[keep[kj]].lat;
+      wlng += w * newPts[keep[kj]].lng;
+      wsum += w;
+    }
+    newPts[keep[ki]] = { ...newPts[keep[ki]], lat: wlat / wsum, lng: wlng / wsum };
+  }
+
+  pts = newPts; meta = preprocess(pts);
+  routeLine.setLatLngs(pts.map(p => [p.lat, p.lng]));
+  coveredLine.setLatLngs([]); prog = 0; render();
+  selA = selB = -1; clearEditLayers(); renderEditLayers(); updateEditUI();
+}
+
+// Click map to relocate selected point (single point or midpoint of range)
+function startMoveMode() {
+  const target = (selA >= 0 && selB >= 0) ? Math.round((selA + selB) / 2) : selA;
+  movePending = true;
+  map.getContainer().style.cursor = 'crosshair';
+  document.getElementById('editHint').innerHTML = `点 #${target} の移動先を<b>地図上でクリック</b>`;
+  map.once('click', e => {
+    movePending = false;
+    map.getContainer().style.cursor = '';
+    editUndo.push(pts.map(p => ({...p})));
+    document.getElementById('btnUndo').disabled = false;
+    pts[target] = { ...pts[target], lat: e.latlng.lat, lng: e.latlng.lng };
+    meta = preprocess(pts);
+    routeLine.setLatLngs(pts.map(p => [p.lat, p.lng]));
+    coveredLine.setLatLngs([]); prog = 0; render();
+    selA = selB = -1; clearEditLayers(); renderEditLayers(); updateEditUI();
+  });
+}
+
+function undoEdit() {
+  if (!editUndo.length) return;
+  pts = editUndo.pop(); meta = preprocess(pts);
+  routeLine.setLatLngs(pts.map(p => [p.lat, p.lng]));
+  coveredLine.setLatLngs([]); prog = 0; render();
+  selA = selB = -1; clearEditLayers(); renderEditLayers(); updateEditUI();
+  document.getElementById('btnUndo').disabled = editUndo.length === 0;
+}
+
+function exportCorrected() {
+  const out = pts.map(p => ({
+    lat: +p.lat.toFixed(7), lng: +p.lng.toFixed(7), timestamp: p.timestamp,
+    ...(p.speed != null ? { speed: +p.speed.toFixed(3) } : {})
+  }));
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `ashiato-corrected-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click(); URL.revokeObjectURL(a.href);
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
