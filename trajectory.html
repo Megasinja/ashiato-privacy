@@ -153,6 +153,51 @@ input[type=range]::-webkit-slider-thumb {
   font-family: 'SF Mono', Consolas, monospace; font-size: .7rem;
 }
 
+/* ── Photo overlay ── */
+.photo-pin img {
+  width: 44px; height: 44px; object-fit: cover;
+  border-radius: 5px; border: 2.5px solid #fff;
+  box-shadow: 0 2px 8px rgba(0,0,0,.4); display: block;
+  cursor: pointer;
+}
+.photo-pin::after {
+  content: ''; display: block;
+  width: 0; height: 0; margin: 0 auto;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 7px solid #fff;
+}
+#photoModal {
+  position: fixed; inset: 0; background: rgba(0,0,0,.82);
+  display: none; align-items: center; justify-content: center;
+  z-index: 3000; padding: 20px; flex-direction: column; gap: 12px;
+}
+#photoModal.open { display: flex; }
+#photoModal img {
+  max-width: min(90vw, 600px); max-height: 70vh;
+  border-radius: 10px; box-shadow: 0 4px 24px rgba(0,0,0,.6);
+}
+#photoModal .ph-info {
+  color: #fff; font-size: .8rem; text-align: center; line-height: 1.6;
+}
+#photoModal .ph-info b { color: #80cbc4; }
+#photoModal .ph-close {
+  position: absolute; top: 16px; right: 18px;
+  background: rgba(255,255,255,.15); border: none; color: #fff;
+  font-size: 1.4rem; border-radius: 50%; width: 36px; height: 36px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+#tzRow {
+  display: none; align-items: center; gap: 8px;
+  padding: 6px 14px; background: #e8f5f1; border-top: 1px solid var(--border);
+  font-size: .74rem; color: var(--muted); flex-shrink: 0;
+}
+#tzRow select {
+  padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: .74rem; font-family: inherit; background: #fff;
+}
+#tzRow label { white-space: nowrap; }
+
 /* ── Edit mode ── */
 #editPanel {
   background: #fff8f0; border-top: 2px solid #e65100;
@@ -204,12 +249,33 @@ input[type=range]::-webkit-slider-thumb {
   </div>
   <button class="hd-btn follow-on" id="followBtn" onclick="toggleFollow()" title="地図追従">📍</button>
   <button class="hd-btn" id="editBtn" onclick="toggleEdit()" title="軌跡を編集">✏️</button>
+  <label  class="hd-btn" title="写真を追加">
+    📷<input type="file" accept="image/*" multiple style="display:none" onchange="onPhotos(this)">
+  </label>
   <label  class="hd-btn" title="ファイルを読み込む">
     📁<input type="file" accept=".json,.geojson,.gpx,.kml" style="display:none" id="fileIn" onchange="onFile(this)">
   </label>
 </div>
 
 <div id="map"></div>
+
+<!-- タイムゾーン設定バー（写真追加後に表示） -->
+<div id="tzRow">
+  <label>📷 写真のタイムゾーン:</label>
+  <select id="tzSel" onchange="rematAllPhotos()">
+    <option value="540">JST (UTC+9)</option>
+    <option value="480">CST (UTC+8)</option>
+    <option value="0">UTC</option>
+    <option value="-300">EST (UTC-5)</option>
+    <option value="-420">PDT (UTC-7)</option>
+    <option value="-480">PST (UTC-8)</option>
+  </select>
+  <label>　時刻補正:</label>
+  <input type="range" id="driftSl" min="-120" max="120" value="0" style="width:80px"
+         oninput="document.getElementById('driftLbl').textContent=this.value+'秒'; rematAllPhotos()">
+  <span id="driftLbl">0秒</span>
+  <button class="ebtn ebtn-ghost" style="margin-left:auto;font-size:.7rem" onclick="clearPhotos()">✕ 写真を消去</button>
+</div>
 
 <div id="panel">
   <span class="mode-banner" id="modeBanner">時間速度一定モード — 実際の時間比率で再生</span>
@@ -232,6 +298,13 @@ input[type=range]::-webkit-slider-thumb {
     <div class="stat"><span class="stat-lbl">移動距離</span><span class="stat-val" id="s-dist">0 m</span></div>
     <div class="stat"><span class="stat-lbl">速度</span>      <span class="stat-val" id="s-spd">-- km/h</span></div>
   </div>
+</div>
+
+<!-- 写真詳細モーダル -->
+<div id="photoModal" onclick="closePhotoModal()">
+  <button class="ph-close" onclick="closePhotoModal()">✕</button>
+  <img id="photoModalImg" src="" alt="">
+  <div class="ph-info" id="photoModalInfo"></div>
 </div>
 
 <div id="editPanel" style="display:none">
@@ -265,6 +338,7 @@ input[type=range]::-webkit-slider-thumb {
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV/XN/WLs=" crossorigin=""></script>
+<script src="https://unpkg.com/exifr@7.1.3/dist/lite.umd.js"></script>
 <script>
 'use strict';
 
@@ -681,6 +755,113 @@ function loadDemo() {
     }
   }
   loadData(raw);
+}
+
+// ── Photo overlay ─────────────────────────────────────────────────────────────
+let photos = []; // { file, url, lat, lng, takenAt, matchMethod }
+let photoMarkerLayers = [];
+
+async function onPhotos(input) {
+  const files = [...input.files]; if (!files.length) return;
+  for (const f of files) {
+    try {
+      const exif = window.exifr ? await exifr.parse(f, { gps: true, exif: true }) : null;
+      const entry = { file: f, url: URL.createObjectURL(f), exif };
+      photos.push(entry);
+    } catch (e) { console.warn('EXIF read error', f.name, e); }
+  }
+  input.value = '';
+  document.getElementById('tzRow').style.display = photos.length ? 'flex' : 'none';
+  rematAllPhotos();
+}
+
+// タイムゾーン/ドリフト変更時に全写真を再マッチング
+function rematAllPhotos() {
+  photoMarkerLayers.forEach(l => map.removeLayer(l));
+  photoMarkerLayers = [];
+  const tzMin  = +document.getElementById('tzSel').value;    // 分単位のオフセット
+  const driftS = +document.getElementById('driftSl').value;  // 秒
+  const tzMs   = tzMin * 60 * 1000;
+  const driftMs = driftS * 1000;
+  for (const ph of photos) {
+    const pos = resolvePhotoPos(ph.exif, tzMs, driftMs);
+    if (!pos) continue;
+    ph.lat = pos.lat; ph.lng = pos.lng; ph.matchMethod = pos.method;
+    addPhotoMarker(ph);
+  }
+}
+
+// 座標決定: EXIF GPS → 軌跡タイムスタンプ補間 の順
+function resolvePhotoPos(exif, tzOffsetMs, driftMs) {
+  if (!exif) return null;
+
+  // 優先1: EXIF GPS
+  if (exif.latitude && exif.longitude)
+    return { lat: exif.latitude, lng: exif.longitude, method: 'exif_gps' };
+
+  // 優先2: 撮影日時 → 軌跡補間
+  const raw = exif.DateTimeOriginal || exif.DateTime || exif.CreateDate;
+  if (!raw || !pts.length) return null;
+
+  const localMs = parseExifDate(raw);
+  if (!localMs) return null;
+
+  // EXIFのローカル時刻をUTCに変換（タイムゾーン + ドリフト補正）
+  const utcMs = localMs - tzOffsetMs + driftMs;
+  if (utcMs < pts[0].timestamp || utcMs > pts[pts.length - 1].timestamp) return null;
+
+  const idx = bsearch(meta.cumTime, utcMs - pts[0].timestamp);
+  const a = pts[idx], b = pts[idx + 1];
+  if (!b) return { lat: a.lat, lng: a.lng, method: 'timestamp' };
+  const frac = (utcMs - a.timestamp) / (b.timestamp - a.timestamp);
+  return {
+    lat: a.lat + (b.lat - a.lat) * frac,
+    lng: a.lng + (b.lng - a.lng) * frac,
+    method: 'timestamp'
+  };
+}
+
+// "2024:06:01 09:15:30" → ミリ秒（ローカル時刻として）
+function parseExifDate(s) {
+  const m = String(s).match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+  if (!m) return null;
+  return new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]).getTime();
+}
+
+function addPhotoMarker(ph) {
+  const icon = L.divIcon({
+    className: 'photo-pin',
+    html: `<img src="${ph.url}" alt="" title="${ph.file.name}\n${ph.matchMethod === 'exif_gps' ? 'GPS座標' : '日時で紐付け'}">`,
+    iconSize: [48, 55], iconAnchor: [24, 55]
+  });
+  const m = L.marker([ph.lat, ph.lng], { icon, zIndexOffset: 500 }).addTo(map);
+  m.on('click', e => {
+    L.DomEvent.stopPropagation(e);
+    openPhotoModal(ph);
+  });
+  photoMarkerLayers.push(m);
+}
+
+function openPhotoModal(ph) {
+  document.getElementById('photoModalImg').src = ph.url;
+  const method = ph.matchMethod === 'exif_gps' ? '📡 EXIF GPS座標' : '🕐 撮影日時で紐付け';
+  const date   = ph.exif?.DateTimeOriginal
+                 ? String(ph.exif.DateTimeOriginal).replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1/$2/$3')
+                 : ph.file.name;
+  document.getElementById('photoModalInfo').innerHTML =
+    `<b>${ph.file.name}</b><br>${date}<br>紐付け: ${method}`;
+  document.getElementById('photoModal').classList.add('open');
+}
+function closePhotoModal() {
+  document.getElementById('photoModal').classList.remove('open');
+}
+
+function clearPhotos() {
+  photos.forEach(ph => URL.revokeObjectURL(ph.url));
+  photos = [];
+  photoMarkerLayers.forEach(l => map.removeLayer(l));
+  photoMarkerLayers = [];
+  document.getElementById('tzRow').style.display = 'none';
 }
 
 // ── Edit mode ─────────────────────────────────────────────────────────────────
