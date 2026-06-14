@@ -102,6 +102,14 @@ fun preprocess(points: List<TrackPoint>): TrackMeta {
 }
 ```
 
+### 2-3. 適応カメラ（自動ズーム・自動センタリング）
+
+再生時刻まわりの移動速度に応じて、**地図のズーム率と中心を自動調整**して見やすくする。
+基本は「再生時刻の前後の時間窓に入る軌跡の bounding box に fitBounds する」だけで、
+速い区間は自動でズームアウト・遅い区間はズームイン・先読み中心になる。
+詳細な構想（速度推定・スムージング・ヒステリシス・先読み・エッジケース・パラメータ）は
+**`playback-adaptive-camera.md`** を参照。
+
 ---
 
 ## 3. バックグラウンドGPS省電力化
@@ -716,4 +724,4 @@ Android実装の前にデータや動作を検証するために使える。
 
 ---
 
-*このドキュメントは会話の設計議論をまとめたものです。実装時は各セクションの詳細設計（`docs/battery-optimization.md`、`docs/route-matching-and-import.md`、`docs/routing-api-options.md`、`docs/route-image-to-coordinates.md`、`docs/photo-gps-matching.md`）も参照してください。*
+*このドキュメントは会話の設計議論をまとめたものです。実装時は各セクションの詳細設計（`docs/battery-optimization.md`、`docs/playback-adaptive-camera.md`、`docs/route-matching-and-import.md`、`docs/routing-api-options.md`、`docs/route-image-to-coordinates.md`、`docs/photo-gps-matching.md`）も参照してください。*
