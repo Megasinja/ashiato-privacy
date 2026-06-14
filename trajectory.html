@@ -183,7 +183,7 @@ input[type=range]::-webkit-slider-thumb {
   </div>
   <button class="hd-btn follow-on" id="followBtn" onclick="toggleFollow()" title="地図追従">📍</button>
   <label  class="hd-btn" title="ファイルを読み込む">
-    📁<input type="file" accept=".json,.geojson" style="display:none" id="fileIn" onchange="onFile(this)">
+    📁<input type="file" accept=".json,.geojson,.gpx,.kml" style="display:none" id="fileIn" onchange="onFile(this)">
   </label>
 </div>
 
@@ -215,17 +215,17 @@ input[type=range]::-webkit-slider-thumb {
 <div id="overlay">
   <div class="card">
     <h2>GPS軌跡を読み込む</h2>
-    <p>記録したGPSデータのJSONファイルを選択するか、<br>サンプルデータで機能を試せます。</p>
+    <p>記録したGPSデータのファイルを選択するか、<br>サンプルデータで機能を試せます。</p>
     <label class="c-btn c-btn-p" style="cursor:pointer">
       📁　ファイルを選択
-      <input type="file" accept=".json,.geojson" style="display:none" onchange="onFile(this)">
+      <input type="file" accept=".json,.geojson,.gpx,.kml" style="display:none" onchange="onFile(this)">
     </label>
     <button class="c-btn c-btn-o" onclick="loadDemo()">▶　サンプルデータで試す</button>
     <div class="fmt">
-      <b>JSONフォーマット例:</b><br>
-      <code>[{"lat":35.68,"lng":139.69,"timestamp":1718000000000}, ...]</code><br>
-      必須: <code>lat</code> <code>lng</code> <code>timestamp</code>（Unixミリ秒 or ISO文字列）<br>
-      任意: <code>speed</code>（m/s）<code>altitude</code>（m）
+      <b>対応形式:</b> <code>JSON</code> <code>GeoJSON</code> <code>GPX</code> <code>KML</code> <code>Google Takeout</code><br>
+      <b>JSON例:</b> <code>[{"lat":35.68,"lng":139.69,"timestamp":1718000000000}, ...]</code><br>
+      必須: <code>lat</code> <code>lng</code>（時刻があれば「時間速度一定」も利用可）<br>
+      ※ GPX / KML はGoogleマイマップやTakeoutのエクスポートを読み込めます
     </div>
   </div>
 </div>
@@ -485,13 +485,24 @@ function setMode(m) {
 function loadData(raw) {
   if (!raw || raw.length < 2) { alert('有効なGPSデータが2点以上必要です'); return; }
 
-  const normalized = raw.map(p => ({
+  let normalized = raw.map(p => ({
     lat:       +(p.lat ?? p.latitude  ?? 0),
     lng:       +(p.lng ?? p.lon ?? p.longitude ?? 0),
-    timestamp: typeof p.timestamp === 'string' ? new Date(p.timestamp).getTime() : +p.timestamp,
+    timestamp: p.timestamp == null ? NaN
+               : (typeof p.timestamp === 'string' ? new Date(p.timestamp).getTime() : +p.timestamp),
     speed:     p.speed     != null ? +p.speed    : null,
-  })).filter(p => p.lat && p.lng && p.timestamp > 0)
-     .sort((a, b) => a.timestamp - b.timestamp);
+  })).filter(p => p.lat && p.lng);
+
+  // タイムスタンプを持つ点が無い（GPX/KMLのルート等）→ 1秒等間隔で補完。
+  // 時間が無い軌跡は「移動速度一定」モードでの再生が前提になる。
+  const hasTime = normalized.some(p => Number.isFinite(p.timestamp));
+  if (!hasTime) {
+    const base = Date.now();
+    normalized.forEach((p, i) => { p.timestamp = base + i * 1000; });
+  } else {
+    normalized = normalized.filter(p => Number.isFinite(p.timestamp))
+                           .sort((a, b) => a.timestamp - b.timestamp);
+  }
 
   if (normalized.length < 2) { alert('有効なGPSデータが不足しています'); return; }
 
@@ -517,26 +528,91 @@ function loadData(raw) {
 
 function onFile(input) {
   const f = input.files[0]; if (!f) return;
+  const name = (f.name || '').toLowerCase();
   const r = new FileReader();
   r.onload = e => {
     try {
-      const d = JSON.parse(e.target.result);
-      if (d.type === 'FeatureCollection') {
-        loadData(d.features
-          .filter(f => f.geometry?.type === 'Point')
-          .map(f => ({
-            lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1],
-            altitude: f.geometry.coordinates[2], ...f.properties
-          })));
-      } else if (Array.isArray(d)) {
-        loadData(d);
-      } else {
-        alert('未対応のJSONフォーマットです');
-      }
+      const text = e.target.result;
+      if (name.endsWith('.gpx'))       loadData(parseGpx(text));
+      else if (name.endsWith('.kml'))  loadData(parseKml(text));
+      else                             loadJsonLike(text);
     } catch(err) { alert('読み込みエラー: ' + err.message); }
   };
   r.readAsText(f);
   input.value = '';
+}
+
+// JSON配列 / GeoJSON / Google Takeout を読み込む
+function loadJsonLike(text) {
+  const d = JSON.parse(text);
+  if (Array.isArray(d)) {
+    loadData(d);
+  } else if (d.type === 'FeatureCollection') {
+    // Point の集合、または LineString の座標列の両方に対応
+    const pts = [];
+    for (const ft of d.features) {
+      const g = ft.geometry; if (!g) continue;
+      if (g.type === 'Point') {
+        pts.push({ lng: g.coordinates[0], lat: g.coordinates[1], altitude: g.coordinates[2], ...ft.properties });
+      } else if (g.type === 'LineString') {
+        g.coordinates.forEach(c => pts.push({ lng: c[0], lat: c[1], altitude: c[2] }));
+      }
+    }
+    loadData(pts);
+  } else if (Array.isArray(d.locations)) {
+    // Google Takeout ロケーション履歴（latE7 / lonE7、timestamp は ISO 文字列）
+    loadData(d.locations.map(l => ({
+      lat: l.latitudeE7 / 1e7, lng: l.longitudeE7 / 1e7,
+      timestamp: l.timestamp ?? (l.timestampMs ? +l.timestampMs : null),
+    })));
+  } else {
+    alert('未対応のJSONフォーマットです');
+  }
+}
+
+// GPX: <trkpt>/<rtept> の lat/lon 属性 + 任意の <time>/<ele>
+function parseGpx(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.querySelector('parsererror')) throw new Error('GPXの解析に失敗しました');
+  let nodes = [...doc.getElementsByTagName('trkpt')];
+  if (!nodes.length) nodes = [...doc.getElementsByTagName('rtept')]; // ルート点
+  return nodes.map(n => {
+    const t = n.getElementsByTagName('time')[0]?.textContent;
+    return {
+      lat: +n.getAttribute('lat'),
+      lng: +n.getAttribute('lon'),
+      timestamp: t ? new Date(t).getTime() : null,
+    };
+  });
+}
+
+// KML: <coordinates> 内は「経度,緯度,標高」を空白/改行区切りで列挙。
+// gx:Track（<gx:coord> + <when>）にも対応する。
+function parseKml(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.querySelector('parsererror')) throw new Error('KMLの解析に失敗しました');
+  const pts = [];
+
+  // gx:Track（時刻付き）
+  const tracks = doc.getElementsByTagName('gx:Track');
+  for (const tr of tracks) {
+    const whens  = [...tr.getElementsByTagName('when')].map(w => w.textContent);
+    const coords = [...tr.getElementsByTagName('gx:coord')].map(c => c.textContent.trim());
+    coords.forEach((c, i) => {
+      const [lng, lat] = c.split(/\s+/).map(Number);
+      pts.push({ lat, lng, timestamp: whens[i] ? new Date(whens[i]).getTime() : null });
+    });
+  }
+  if (pts.length) return pts;
+
+  // 通常の <coordinates>（LineString / Point）
+  for (const co of doc.getElementsByTagName('coordinates')) {
+    co.textContent.trim().split(/\s+/).forEach(tuple => {
+      const [lng, lat] = tuple.split(',').map(Number);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) pts.push({ lat, lng, timestamp: null });
+    });
+  }
+  return pts;
 }
 
 // ── Demo data (渋谷付近の模擬ウォーク) ──────────────────────────────────────
